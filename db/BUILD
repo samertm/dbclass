@@ -3,4 +3,7 @@ cc_binary(
     srcs = [
         'main.cc',
     ],
+    deps = [
+        '//thirdparty/fast-cpp-csv-parser',
+    ],
 )

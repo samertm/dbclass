@@ -1,6 +1,9 @@
 #include <iostream>
 #include <vector>
 #include <tuple>
+#include <unordered_map>
+
+#include "thirdparty/fast-cpp-csv-parser/csv.h"
 
 using std::vector;
 using std::tuple;
@@ -8,39 +11,24 @@ using std::get;
 using std::string;
 using std::cout;
 using std::size_t;
+using std::unordered_map;
 
 class row_tuple {
  public:
-  row_tuple() : row_names({}), row_data({}) {}
-  row_tuple(vector<string> row_names, vector<string> row_data) :
-      row_names(std::move(row_names)), row_data(std::move(row_data)) {}
+  row_tuple() : row_data({}) {}
+  row_tuple(unordered_map<string, string> row_data) :
+      row_data(std::move(row_data)) {}
 
-  // TODO: reimplement using unordered_map
-  vector<string> row_names;
-  vector<string> row_data;
+  unordered_map<string, string> row_data;
 };
 
 inline bool operator==(const row_tuple& lhs, const row_tuple& rhs){
-  if (lhs.row_names.size() != rhs.row_names.size() ||
-      lhs.row_data.size() != rhs.row_data.size()) {
-    return false;
-  }
-  for (size_t i = 0; i < lhs.row_names.size(); i++) {
-    if (lhs.row_names[i] != rhs.row_names[i]) {
-      return false;
-    }
-  }
-  for (size_t i = 0; i < lhs.row_data.size(); i++) {
-    if (lhs.row_data[i] != rhs.row_data[i]) {
-      return false;
-    }
-  }
-  return true;
+  return lhs.row_data == rhs.row_data;
 }
 inline bool operator!=(const row_tuple& lhs, const row_tuple& rhs){ return !(lhs == rhs); }
 
 
-auto EOF_tuple = row_tuple({}, {});
+auto EOF_tuple = row_tuple();
 
 class iterator {
  public:
@@ -48,7 +36,22 @@ class iterator {
   virtual void close() = 0;
 };
 
-class scan : public iterator {
+class csv_scan : public iterator {
+ public:
+  void init(string path) {
+    this->path = path;
+  }
+  row_tuple next() {
+  }
+  void close() {
+    // SAMER
+  }
+
+ private:
+  string path;
+}
+
+class manual_tuple_scan : public iterator {
  public:
   void init() {
   }
@@ -102,30 +105,33 @@ class selection : public iterator {
 };
 
 int main() {
-  auto s = scan();
+  manual_tuple_scan s;
   s.set_input({
-      row_tuple({"name", "age"}, {"samer", "11"}),
-          row_tuple({"name", "age"}, {"jake", "14"}),
-          row_tuple({"name", "age"}, {"michael", "13"}),
-          row_tuple({"name", "age"}, {"matthew", "14"}),
-          row_tuple({"name", "age"}, {"cameron", "12"}),
-          row_tuple({"name", "age"}, {"samer", "12"}),
+      row_tuple({{"name", "samer"}, {"age", "11"}}),
+          row_tuple({{"name", "jake"}, {"age", "14"}}),
+          row_tuple({{"name", "michael"}, {"age", "13"}}),
+          row_tuple({{"name", "matthew"}, {"age", "14"}}),
+          row_tuple({{"name", "cameron"}, {"age", "12"}}),
+          row_tuple({{"name", "samer"}, {"age", "12"}}),
     });
 
   auto selection_node = selection();
   selection_node.init([](row_tuple t) -> bool {
-      return t.row_data[0] == "samer";
+      return t.row_data["name"] == "samer";
     });
   selection_node.set_input(&s);
 
   row_tuple t;
 
   while ( (t = selection_node.next()) != EOF_tuple ) {
-    for (size_t i = 0; i < t.row_names.size(); i++) {
-      if (i > 0) {
+    bool first = true;
+    for ( const auto& n : t.row_data ) {
+      if (first) {
+        first = false;
+      } else {
         cout << ", ";
       }
-      cout << t.row_names[i] << ": " << t.row_data[i];
+      cout << n.first << ": " << n.second;
     }
     cout << "\n";
   }
