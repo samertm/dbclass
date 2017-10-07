@@ -2,8 +2,13 @@
 #include <vector>
 #include <tuple>
 #include <unordered_map>
+#include <cstdio>
 
-#include "thirdparty/fast-cpp-csv-parser/csv.h"
+#include "absl/strings/ascii.h"
+
+extern "C" {
+#include "thirdparty/csv_parser/csv.h"
+}
 
 using std::vector;
 using std::tuple;
@@ -42,6 +47,7 @@ class csv_scan : public iterator {
     this->path = path;
   }
   row_tuple next() {
+    return row_tuple();
   }
   void close() {
     // SAMER
@@ -49,7 +55,7 @@ class csv_scan : public iterator {
 
  private:
   string path;
-}
+};
 
 class manual_tuple_scan : public iterator {
  public:
@@ -104,28 +110,75 @@ class selection : public iterator {
   iterator *it;
 };
 
+
+
 int main() {
-  manual_tuple_scan s;
-  s.set_input({
-      row_tuple({{"name", "samer"}, {"age", "11"}}),
-          row_tuple({{"name", "jake"}, {"age", "14"}}),
-          row_tuple({{"name", "michael"}, {"age", "13"}}),
-          row_tuple({{"name", "matthew"}, {"age", "14"}}),
-          row_tuple({{"name", "cameron"}, {"age", "12"}}),
-          row_tuple({{"name", "samer"}, {"age", "12"}}),
-    });
+  auto fp = std::fopen("/home/samer/src/db/resources/movielens/movies.csv", "r");
+  if (fp == NULL) {
+    cout << "Could not open csv\n";
+    return 1;
+  }
 
-  auto selection_node = selection();
-  selection_node.init([](row_tuple t) -> bool {
-      return t.row_data["name"] == "samer";
-    });
-  selection_node.set_input(&s);
+  vector<string> headers = {"movieid", "genres"};
+  vector<int> headers_to_csv_cols;
+  vector<row_tuple> data;
 
-  row_tuple t;
+  bool is_header = true; // The first line is the header.
+  int done = 0;
+  int err = 0;
+  while (true) {
+    char* line = fread_csv_line(fp, 100000, &done, &err);
+    if (done) {
+      break;
+    }
+    if (err) {
+      cout << "Read failed with error: " << err << "\n";
+      return 1;
+    }
+    char **parsed = parse_csv(line); // TODO check null/error?
+    if (is_header) {
+      // Get all headers from the csv
+      vector<string> csv_headers;
+      for ( ; *parsed != NULL ; parsed++ ) {
+        auto s = string(*parsed);
+        absl::AsciiStrToLower(&s);
+        csv_headers.push_back(s);
+      }
 
-  while ( (t = selection_node.next()) != EOF_tuple ) {
+      for (auto h : headers) {
+        auto found = false;
+        // This is O(n^2), but n should be small (hopefully smaller
+        // than the overhead of creating a map?).
+        for (int i = 0; i < csv_headers.size(); i++) {
+          auto ch = csv_headers[i];
+          if (h == ch) {
+            found = true;
+            headers_to_csv_cols.push_back(i);
+            break;
+          }
+        }
+        if (!found) {
+          cout << "Could not find header: " << h << "\n";
+          return 1;
+        }
+      }
+
+      is_header = false;
+    } else { // is_header == false
+      unordered_map<string, string> row_tuple_data;
+      for (int i = 0; i < headers.size(); i++) {
+        auto h = headers[i];
+        auto csv_index = headers_to_csv_cols[i];
+        row_tuple_data[h] = string(*(parsed + csv_index));
+      }
+      row_tuple r = row_tuple(row_tuple_data);
+      data.push_back(r);
+    }
+  }
+
+  for (auto rt : data) {
     bool first = true;
-    for ( const auto& n : t.row_data ) {
+    for (auto n : rt.row_data) {
       if (first) {
         first = false;
       } else {
@@ -135,6 +188,45 @@ int main() {
     }
     cout << "\n";
   }
-
+  // for ( ; *parsed != NULL || count == 3 ; parsed++ ) {
+  //   cout << "SUP\n";
+  //   std::printf("%p", parsed);
+  //   count++;
+  // }
   return 0;
 }
+
+// int main() {
+//   manual_tuple_scan s;
+//   s.set_input({
+//       row_tuple({{"name", "samer"}, {"age", "11"}}),
+//           row_tuple({{"name", "jake"}, {"age", "14"}}),
+//           row_tuple({{"name", "michael"}, {"age", "13"}}),
+//           row_tuple({{"name", "matthew"}, {"age", "14"}}),
+//           row_tuple({{"name", "cameron"}, {"age", "12"}}),
+//           row_tuple({{"name", "samer"}, {"age", "12"}}),
+//     });
+
+//   auto selection_node = selection();
+//   selection_node.init([](row_tuple t) -> bool {
+//       return t.row_data["name"] == "samer";
+//     });
+//   selection_node.set_input(&s);
+
+//   row_tuple t;
+
+//   while ( (t = selection_node.next()) != EOF_tuple ) {
+//     bool first = true;
+//     for ( const auto& n : t.row_data ) {
+//       if (first) {
+//         first = false;
+//       } else {
+//         cout << ", ";
+//       }
+//       cout << n.first << ": " << n.second;
+//     }
+//     cout << "\n";
+//   }
+
+//   return 0;
+// }

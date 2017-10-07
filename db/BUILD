@@ -4,6 +4,12 @@ cc_binary(
         'main.cc',
     ],
     deps = [
-        '//thirdparty/fast-cpp-csv-parser',
+        '//thirdparty/csv_parser',
+        '@com_google_absl//absl/strings',
+    ],
+    copts = [
+        '-Wall',
+        '-Wold-style-cast',
+        #'-Werror',
     ],
 )
