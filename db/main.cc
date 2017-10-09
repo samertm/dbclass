@@ -3,6 +3,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <cstdio>
+#include <stdexcept>
 
 #include "absl/strings/ascii.h"
 
@@ -17,6 +18,7 @@ using std::string;
 using std::cout;
 using std::size_t;
 using std::unordered_map;
+using std::runtime_error;
 
 class row_tuple {
  public:
@@ -41,25 +43,103 @@ class iterator {
   virtual void close() = 0;
 };
 
+const int kMaxCSVLineLength = 100000;
+
 class csv_scan : public iterator {
  public:
-  void init(string path) {
+  void init(string path, vector<string> headers) {
     this->path = path;
+    this->headers = headers;
+
+    // Read the headers from the first line of the CSV
+    auto fp = std::fopen(this->path.c_str(), "r");
+    if (fp == NULL) {
+      throw runtime_error("Could not open CSV with path: " + this->path);
+    }
+    this->fp = fp;
+
+    vector<size_t> headers_to_csv_cols;
+    int done = 0;
+    int err = 0;
+    char* line = fread_csv_line(fp, kMaxCSVLineLength, &done, &err);
+    if (done) {
+      throw runtime_error("CSV has no data: " + this->path);
+    }
+    if (err) {
+      throw runtime_error("CSV reading error: " + this->path);
+    }
+    char **parsed = parse_csv(line); // TODO check null/error?
+    char **parsed_start = parsed;
+
+    // Get all headers from the csv
+    vector<string> csv_headers;
+    for ( ; *parsed != NULL ; parsed++ ) {
+      auto s = string(*parsed);
+      absl::AsciiStrToLower(&s);
+      csv_headers.push_back(s);
+    }
+
+    for (auto h : headers) {
+      auto found = false;
+      // This is O(n^2), but n should be small (hopefully smaller
+      // than the overhead of creating a map?).
+      for (size_t i = 0; i < csv_headers.size(); i++) {
+        auto ch = csv_headers[i];
+        if (h == ch) {
+          found = true;
+          headers_to_csv_cols.push_back(i);
+          break;
+        }
+      }
+      if (!found) {
+        throw runtime_error("Could not find header: " + h + "\n");
+      }
+    }
+    this->headers_to_csv_cols = headers_to_csv_cols;
+
+    free_csv_line(parsed_start);
   }
   row_tuple next() {
-    return row_tuple();
+    if (this->is_done) {
+      return EOF_tuple;
+    }
+    int done = 0;
+    int err = 0;
+    char *line = fread_csv_line(this->fp, kMaxCSVLineLength, &done, &err);
+    if (done) {
+      this->is_done = true;
+      return EOF_tuple;
+    }
+    if (err) {
+      throw runtime_error("CSV read failed with error: " + err);
+    }
+    char **parsed = parse_csv(line); // TODO check null/error?
+    unordered_map<string, string> row_tuple_data;
+    for (size_t i = 0; i < this->headers.size(); i++) {
+      auto h = this->headers[i];
+      auto csv_index = this->headers_to_csv_cols[i];
+      row_tuple_data[h] = string(*(parsed + csv_index));
+    }
+    free_csv_line(parsed);
+    return row_tuple(row_tuple_data);
   }
   void close() {
-    // SAMER
+    // TODO
   }
 
  private:
   string path;
+  vector<string> headers;
+  FILE *fp;
+  vector<size_t> headers_to_csv_cols;
+
+  bool is_done = false;
 };
 
 class manual_tuple_scan : public iterator {
  public:
-  void init() {
+  void init(vector<row_tuple> rows) {
+    this->rows = std::move(rows);
   }
   row_tuple next() {
     if (this->rows_index >= this->rows.size()) {
@@ -74,9 +154,6 @@ class manual_tuple_scan : public iterator {
   void close() {
   }
 
-  void set_input(vector<row_tuple> rows) {
-    this->rows = std::move(rows);
-  }
  private:
   vector<row_tuple> rows;
   std::size_t rows_index = 0;
@@ -84,13 +161,14 @@ class manual_tuple_scan : public iterator {
 
 class selection : public iterator {
  public:
-  void init(bool (*predicate)(row_tuple)) {
+  void init(iterator *input, bool (*predicate)(row_tuple)) {
+    this->input = input;
     this->predicate = predicate;
   }
   row_tuple next() {
     row_tuple t;
 
-    while ( (t = this->it->next()) != EOF_tuple ) {
+    while ( (t = this->input->next()) != EOF_tuple ) {
       if (this->predicate(t)) {
         return t;
       }
@@ -101,84 +179,26 @@ class selection : public iterator {
   void close() {
   }
 
-  void set_input(iterator *it) {
-    this->it = it;
-  }
-
  private:
   bool (*predicate)(row_tuple);
-  iterator *it;
+  iterator *input;
 };
 
 
-
 int main() {
-  auto fp = std::fopen("/home/samer/src/db/resources/movielens/movies.csv", "r");
-  if (fp == NULL) {
-    cout << "Could not open csv\n";
-    return 1;
-  }
+  csv_scan s;
+  s.init("/home/samer/src/db/resources/movielens/movies.csv", {"movieid", "title"});
 
-  vector<string> headers = {"movieid", "genres"};
-  vector<int> headers_to_csv_cols;
-  vector<row_tuple> data;
+  auto selection_node = selection();
+  selection_node.init(&s, [](row_tuple t) -> bool {
+      return t.row_data["movieid"] == "24";
+    });
 
-  bool is_header = true; // The first line is the header.
-  int done = 0;
-  int err = 0;
-  while (true) {
-    char* line = fread_csv_line(fp, 100000, &done, &err);
-    if (done) {
-      break;
-    }
-    if (err) {
-      cout << "Read failed with error: " << err << "\n";
-      return 1;
-    }
-    char **parsed = parse_csv(line); // TODO check null/error?
-    if (is_header) {
-      // Get all headers from the csv
-      vector<string> csv_headers;
-      for ( ; *parsed != NULL ; parsed++ ) {
-        auto s = string(*parsed);
-        absl::AsciiStrToLower(&s);
-        csv_headers.push_back(s);
-      }
+  row_tuple t;
 
-      for (auto h : headers) {
-        auto found = false;
-        // This is O(n^2), but n should be small (hopefully smaller
-        // than the overhead of creating a map?).
-        for (int i = 0; i < csv_headers.size(); i++) {
-          auto ch = csv_headers[i];
-          if (h == ch) {
-            found = true;
-            headers_to_csv_cols.push_back(i);
-            break;
-          }
-        }
-        if (!found) {
-          cout << "Could not find header: " << h << "\n";
-          return 1;
-        }
-      }
-
-      is_header = false;
-    } else { // is_header == false
-      unordered_map<string, string> row_tuple_data;
-      for (int i = 0; i < headers.size(); i++) {
-        auto h = headers[i];
-        auto csv_index = headers_to_csv_cols[i];
-        row_tuple_data[h] = string(*(parsed + csv_index));
-      }
-      row_tuple r = row_tuple(row_tuple_data);
-      data.push_back(r);
-    }
-  }
-
-  for (auto rt : data) {
+  while ( (t = selection_node.next()) != EOF_tuple ) {
     bool first = true;
-    for (auto n : rt.row_data) {
+    for ( const auto& n : t.row_data ) {
       if (first) {
         first = false;
       } else {
@@ -188,45 +208,6 @@ int main() {
     }
     cout << "\n";
   }
-  // for ( ; *parsed != NULL || count == 3 ; parsed++ ) {
-  //   cout << "SUP\n";
-  //   std::printf("%p", parsed);
-  //   count++;
-  // }
+
   return 0;
 }
-
-// int main() {
-//   manual_tuple_scan s;
-//   s.set_input({
-//       row_tuple({{"name", "samer"}, {"age", "11"}}),
-//           row_tuple({{"name", "jake"}, {"age", "14"}}),
-//           row_tuple({{"name", "michael"}, {"age", "13"}}),
-//           row_tuple({{"name", "matthew"}, {"age", "14"}}),
-//           row_tuple({{"name", "cameron"}, {"age", "12"}}),
-//           row_tuple({{"name", "samer"}, {"age", "12"}}),
-//     });
-
-//   auto selection_node = selection();
-//   selection_node.init([](row_tuple t) -> bool {
-//       return t.row_data["name"] == "samer";
-//     });
-//   selection_node.set_input(&s);
-
-//   row_tuple t;
-
-//   while ( (t = selection_node.next()) != EOF_tuple ) {
-//     bool first = true;
-//     for ( const auto& n : t.row_data ) {
-//       if (first) {
-//         first = false;
-//       } else {
-//         cout << ", ";
-//       }
-//       cout << n.first << ": " << n.second;
-//     }
-//     cout << "\n";
-//   }
-
-//   return 0;
-// }
