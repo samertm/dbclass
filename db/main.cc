@@ -45,7 +45,7 @@ class iterator {
 
 const int kMaxCSVLineLength = 100000;
 
-class csv_scan : public iterator {
+class csv_scan_iterator : public iterator {
  public:
   void init(string path, vector<string> headers) {
     this->path = path;
@@ -136,7 +136,7 @@ class csv_scan : public iterator {
   bool is_done = false;
 };
 
-class manual_tuple_scan : public iterator {
+class manual_tuple_scan_iterator : public iterator {
  public:
   void init(vector<row_tuple> rows) {
     this->rows = std::move(rows);
@@ -159,7 +159,7 @@ class manual_tuple_scan : public iterator {
   std::size_t rows_index = 0;
 };
 
-class selection : public iterator {
+class selection_iterator : public iterator {
  public:
   void init(iterator *input, bool (*predicate)(row_tuple)) {
     this->input = input;
@@ -184,7 +184,7 @@ class selection : public iterator {
   iterator *input;
 };
 
-class projection : public iterator {
+class projection_iterator : public iterator {
  public:
   void init(iterator *input, vector<string> cols_to_project) {
     this->input = input;
@@ -211,7 +211,7 @@ class projection : public iterator {
   vector<string> cols_to_project;
 };
 
-class average : public iterator {
+class average_iterator : public iterator {
  public:
   void init(iterator *input, string col_to_average, string aggregated_col_name = "average") {
     this->input = input;
@@ -249,6 +249,7 @@ class average : public iterator {
   string aggregated_col_name;
 };
 
+
 void print_data(iterator *it) {
   row_tuple t;
 
@@ -267,22 +268,22 @@ void print_data(iterator *it) {
 }
 
 void test_movies_csv() {
-  csv_scan s;
+  csv_scan_iterator s;
   s.init("/home/samer/src/db/resources/movielens/movies.csv", {"movieid", "title"});
 
-  auto selection_node = selection();
+  auto selection_node = selection_iterator();
   selection_node.init(&s, [](row_tuple t) -> bool {
       return t.row_data["movieid"] == "24";
     });
 
-  auto projection_node = projection();
+  auto projection_node = projection_iterator();
   projection_node.init(&selection_node, {"title"});
 
   print_data(&projection_node);
 }
 
-void test_average() {
-  manual_tuple_scan m_node;
+void test_average_iterator() {
+  manual_tuple_scan_iterator m_node;
   m_node.init({
       row_tuple({{"name", "samer"}, {"age", "11.5"}}),
           row_tuple({{"name", "john"}, {"age", "30"}}),
@@ -290,23 +291,22 @@ void test_average() {
           row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
     });
 
-  average a_node;
+  average_iterator a_node;
   a_node.init(&m_node, "age");
 
   print_data(&a_node);
 }
 
-// WIP: This takes too long
 void test_ratings_csv() {
-  csv_scan cs_node;
-  cs_node.init("/home/samer/src/db/resources/movielens/ratings.csv", {"movieid", "rating"});
+  csv_scan_iterator cs_node;
+  cs_node.init("/home/samer/src/db/resources/movielens/ratings-100.csv", {"movieid", "rating"});
 
-  selection s_node;
+  selection_iterator s_node;
   s_node.init(&cs_node, [](row_tuple t) -> bool {
-      return t.row_data["movieid"] == "5000";
+      return t.row_data["movieid"] == "1222";
     });
 
-  average a_node;
+  average_iterator a_node;
   a_node.init(&s_node, "rating");
 
   print_data(&a_node);
@@ -314,6 +314,6 @@ void test_ratings_csv() {
 
 int main() {
   //test_movies_csv();
-  test_average();
-  //test_ratings_csv();
+  //test_average_iterator();
+  test_ratings_csv();
 }
