@@ -184,6 +184,34 @@ class selection : public iterator {
   iterator *input;
 };
 
+class projection : public iterator {
+ public:
+  void init(iterator *input, vector<string> cols_to_project) {
+    this->input = input;
+    this->cols_to_project = cols_to_project;
+  }
+  row_tuple next() {
+    row_tuple t = this->input->next();
+    if (t == EOF_tuple) {
+      return EOF_tuple;
+    }
+
+    unordered_map<string, string> row_tuple_data;
+    for (auto col_name : this->cols_to_project) {
+      row_tuple_data[col_name] = t.row_data[col_name];
+    }
+
+    return row_tuple(row_tuple_data);
+  }
+  void close() {
+  }
+
+ private:
+  iterator *input;
+  vector<string> cols_to_project;
+};
+
+
 
 int main() {
   csv_scan s;
@@ -194,9 +222,12 @@ int main() {
       return t.row_data["movieid"] == "24";
     });
 
+  auto projection_node = projection();
+  projection_node.init(&selection_node, {"title"});
+
   row_tuple t;
 
-  while ( (t = selection_node.next()) != EOF_tuple ) {
+  while ( (t = projection_node.next()) != EOF_tuple ) {
     bool first = true;
     for ( const auto& n : t.row_data ) {
       if (first) {
