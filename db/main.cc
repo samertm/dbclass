@@ -40,6 +40,7 @@ auto EOF_tuple = row_tuple();
 
 class iterator {
  public:
+  virtual void init() = 0;
   virtual row_tuple next() = 0;
   virtual void close() = 0;
 };
@@ -48,13 +49,13 @@ const int kMaxCSVLineLength = 100000;
 
 class csv_scan_iterator : public iterator {
  public:
-  void init(string path, vector<string> headers) {
-    this->path = path;
-    this->headers = headers;
+  csv_scan_iterator (string path, vector<string> headers) :
+      path(path), headers(headers) {}
 
+  void init() {
     // Read the headers from the first line of the CSV
     auto fp = std::fopen(this->path.c_str(), "r");
-    if (fp == NULL) {
+    if (fp == nullptr) {
       throw runtime_error("Could not open CSV with path: " + this->path);
     }
     this->fp = fp;
@@ -70,17 +71,18 @@ class csv_scan_iterator : public iterator {
       throw runtime_error("CSV reading error: " + this->path);
     }
     char **parsed = parse_csv(line); // TODO check null/error?
+    free(line);
     char **parsed_start = parsed;
 
     // Get all headers from the csv
     vector<string> csv_headers;
-    for ( ; *parsed != NULL ; parsed++ ) {
+    for ( ; *parsed != nullptr ; parsed++ ) {
       auto s = string(*parsed);
       absl::AsciiStrToLower(&s);
       csv_headers.push_back(s);
     }
 
-    for (auto h : headers) {
+    for (const auto& h : headers) {
       auto found = false;
       // This is O(n^2), but n should be small (hopefully smaller
       // than the overhead of creating a map?).
@@ -100,6 +102,7 @@ class csv_scan_iterator : public iterator {
 
     free_csv_line(parsed_start);
   }
+
   row_tuple next() {
     if (this->is_done) {
       return EOF_tuple;
@@ -115,6 +118,7 @@ class csv_scan_iterator : public iterator {
       throw runtime_error("CSV read failed with error: " + err);
     }
     char **parsed = parse_csv(line); // TODO check null/error?
+    free(line);
     unordered_map<string, string> row_tuple_data;
     for (size_t i = 0; i < this->headers.size(); i++) {
       auto h = this->headers[i];
@@ -124,8 +128,12 @@ class csv_scan_iterator : public iterator {
     free_csv_line(parsed);
     return row_tuple(row_tuple_data);
   }
+
   void close() {
-    // TODO
+    std::fclose(this->fp);
+    this->fp = nullptr;
+    this->is_done = false;
+    this->headers_to_csv_cols = {};
   }
 
  private:
@@ -139,9 +147,11 @@ class csv_scan_iterator : public iterator {
 
 class manual_tuple_scan_iterator : public iterator {
  public:
-  void init(vector<row_tuple> rows) {
-    this->rows = std::move(rows);
-  }
+  manual_tuple_scan_iterator (vector<row_tuple> rows) :
+      rows(rows) {}
+
+  void init() {}
+
   row_tuple next() {
     if (this->rows_index >= this->rows.size()) {
       return EOF_tuple;
@@ -152,7 +162,9 @@ class manual_tuple_scan_iterator : public iterator {
 
     return next_tuple;
   }
+
   void close() {
+    this->rows_index = 0;
   }
 
  private:
@@ -162,10 +174,13 @@ class manual_tuple_scan_iterator : public iterator {
 
 class selection_iterator : public iterator {
  public:
-  void init(iterator *input, bool (*predicate)(row_tuple)) {
-    this->input = input;
-    this->predicate = predicate;
+  selection_iterator (iterator *input, bool (*predicate)(row_tuple)) :
+      input(input), predicate(predicate) {}
+
+  void init() {
+    this->input->init();
   }
+
   row_tuple next() {
     row_tuple t;
 
@@ -177,20 +192,25 @@ class selection_iterator : public iterator {
 
     return EOF_tuple;
   }
+
   void close() {
+    this->input->close();
   }
 
  private:
-  bool (*predicate)(row_tuple);
   iterator *input;
+  bool (*predicate)(row_tuple);
 };
 
 class projection_iterator : public iterator {
  public:
-  void init(iterator *input, vector<string> cols_to_project) {
-    this->input = input;
-    this->cols_to_project = cols_to_project;
+  projection_iterator (iterator *input, vector<string> cols_to_project) :
+      input(input), cols_to_project(cols_to_project) {}
+
+  void init() {
+    this->input->init();
   }
+
   row_tuple next() {
     row_tuple t = this->input->next();
     if (t == EOF_tuple) {
@@ -198,13 +218,15 @@ class projection_iterator : public iterator {
     }
 
     unordered_map<string, string> row_tuple_data;
-    for (auto col_name : this->cols_to_project) {
+    for (const auto& col_name : this->cols_to_project) {
       row_tuple_data[col_name] = t.row_data[col_name];
     }
 
     return row_tuple(row_tuple_data);
   }
+
   void close() {
+    this->input->close();
   }
 
  private:
@@ -214,11 +236,13 @@ class projection_iterator : public iterator {
 
 class average_iterator : public iterator {
  public:
-  void init(iterator *input, string col_to_average, string aggregated_col_name = "average") {
-    this->input = input;
-    this->col_to_average = col_to_average;
-    this->aggregated_col_name = aggregated_col_name;
+  average_iterator (iterator *input, string col_to_average, string aggregated_col_name = "average") :
+      input(input), col_to_average(col_to_average), aggregated_col_name(aggregated_col_name) {}
+
+  void init() {
+    this->input->init();
   }
+
   row_tuple next() {
     if (done) {
       return EOF_tuple;
@@ -241,8 +265,12 @@ class average_iterator : public iterator {
     done = true;
     return row_tuple(row_tuple_data);
   }
+
   void close() {
+    this->done = false;
+    this->input->close();
   }
+
  private:
   iterator *input;
   string col_to_average;
@@ -253,62 +281,73 @@ class average_iterator : public iterator {
 class sort_iterator : public iterator {
  public:
   // Pass `col_to_sort: ""` to sort on all rows.
-  void init(iterator *input, string col_to_sort) {
-    this->input = input;
-    this->col_to_sort = col_to_sort;
-  }
-  row_tuple next() {
-    if (this->sorted_rows == NULL) {
-      // Read all data into memory.
-      auto rows = new vector<row_tuple>();
-      row_tuple t;
-      while ( (t = this->input->next()) != EOF_tuple) {
-        rows->push_back(t);
-      }
+  sort_iterator (iterator *input, string col_to_sort) :
+      input(input), col_to_sort(col_to_sort) {}
 
-      auto col_to_sort = this->col_to_sort;
+  void init() {
+    this->input->init();
 
-      std::sort(rows->begin(), rows->end(), [&col_to_sort](row_tuple &a, row_tuple &b) {
-          // TODO: use const args
-          if (col_to_sort != "") {
-            return a.row_data[col_to_sort] < b.row_data[col_to_sort];
-          }
-          for ( const auto& n : a.row_data ) {
-            if (n.second < b.row_data[n.first]) {
-              return true;
-            } else if (n.second > b.row_data[n.first]) {
-              return false;
-            }
-            // if the values are equal, check the new col
-          }
-          // If the rows are equal, default to false
-          return false;
-        });
-
-      this->sorted_rows = rows;
+    // Read all data into memory.
+    auto rows = new vector<row_tuple>();
+    row_tuple t;
+    while ( (t = this->input->next()) != EOF_tuple) {
+      rows->push_back(t);
     }
 
+    auto col_to_sort = this->col_to_sort;
+
+    std::sort(rows->begin(), rows->end(), [&col_to_sort](row_tuple &a, row_tuple &b) {
+        // TODO: use const args
+        if (col_to_sort != "") {
+          return a.row_data[col_to_sort] < b.row_data[col_to_sort];
+        }
+        for ( const auto& n : a.row_data ) {
+          if (n.second < b.row_data[n.first]) {
+            return true;
+          } else if (n.second > b.row_data[n.first]) {
+            return false;
+          }
+          // if the values are equal, check the new col
+        }
+        // If the rows are equal, default to false
+        return false;
+      });
+
+    this->sorted_rows = rows;
+  }
+
+  row_tuple next() {
     if (this->index >= this->sorted_rows->size()) {
       return EOF_tuple;
     }
+
     row_tuple next_tuple = (*this->sorted_rows)[this->index];
     this->index++;
     return next_tuple;
   }
+
   void close() {
+    delete this->sorted_rows;
+    this->sorted_rows = nullptr;
+    this->index = 0;
+    this->input->close();
   }
  private:
   iterator *input;
   string col_to_sort;
-  vector<row_tuple> *sorted_rows = NULL;
+  vector<row_tuple> *sorted_rows = nullptr;
   size_t index = 0;
 };
 
 class distinct_iterator : public iterator {
  public:
-  void init(iterator *input) {
-    this->input = input;
+  distinct_iterator (iterator *input) :
+      input(input) {}
+
+  void init() {
+    this->input->init();
   }
+
   row_tuple next() {
     if (this->done) {
       return EOF_tuple;
@@ -325,8 +364,14 @@ class distinct_iterator : public iterator {
     this->done = true;
     return EOF_tuple;
   }
+
   void close() {
+    this->done = false;
+    this->first = true;
+    this->current_row = row_tuple();
+    this->input->close();
   }
+
  private:
   iterator *input;
   row_tuple current_row;
@@ -336,6 +381,7 @@ class distinct_iterator : public iterator {
 
 
 void print_data(iterator *it) {
+  it->init();
   row_tuple t;
 
   while ( (t = it->next()) != EOF_tuple ) {
@@ -350,71 +396,62 @@ void print_data(iterator *it) {
     }
     cout << "\n";
   }
+
+  it->close();
 }
 
 void test_movies_csv() {
-  csv_scan_iterator s;
-  s.init("/home/samer/src/db/resources/movielens/movies.csv", {"movieid", "title"});
+  auto s = csv_scan_iterator("/home/samer/src/db/resources/movielens/movies.csv", {"movieid", "title"});
 
-  auto selection_node = selection_iterator();
-  selection_node.init(&s, [](row_tuple t) -> bool {
+  auto selection_node = selection_iterator(&s, [](row_tuple t) -> bool {
       return t.row_data["movieid"] == "24";
     });
 
-  auto projection_node = projection_iterator();
-  projection_node.init(&selection_node, {"title"});
+  auto projection_node = projection_iterator(&selection_node, {"title"});
 
   print_data(&projection_node);
 }
 
 void test_average_iterator() {
-  manual_tuple_scan_iterator m_node;
-  m_node.init({
+  auto m_node = manual_tuple_scan_iterator({
       row_tuple({{"name", "samer"}, {"age", "11.5"}}),
           row_tuple({{"name", "john"}, {"age", "30"}}),
           row_tuple({{"name", "fred"}, {"age", "20"}}),
           row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
     });
 
-  average_iterator a_node;
-  a_node.init(&m_node, "age");
+  auto a_node = average_iterator(&m_node, "age");
 
   print_data(&a_node);
 }
 
 void test_ratings_csv() {
-  csv_scan_iterator cs_node;
-  cs_node.init("/home/samer/src/db/resources/movielens/ratings-100.csv", {"movieid", "rating"});
+  auto cs_node = csv_scan_iterator("/home/samer/src/db/resources/movielens/ratings-100.csv", {"movieid", "rating"});
 
-  selection_iterator s_node;
-  s_node.init(&cs_node, [](row_tuple t) -> bool {
+  auto s_node = selection_iterator(&cs_node, [](row_tuple t) -> bool {
       return t.row_data["movieid"] == "1222";
     });
 
-  average_iterator a_node;
-  a_node.init(&s_node, "rating");
+  auto a_node = average_iterator(&s_node, "rating");
 
   print_data(&a_node);
 }
 
 void test_sort_iterator() {
-  manual_tuple_scan_iterator m_node;
-  m_node.init({
+  auto m_node = manual_tuple_scan_iterator({
       row_tuple({{"name", "samer"}, {"age", "11.5"}}),
           row_tuple({{"name", "john"}, {"age", "30"}}),
           row_tuple({{"name", "fred"}, {"age", "20"}}),
           row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
     });
 
-  sort_iterator s_node;
-  s_node.init(&m_node, "name");
+  auto s_node = sort_iterator(&m_node, "name");
 
   print_data(&s_node);
 }
 
 void test_distinct_iterator() {
-  manual_tuple_scan_iterator m_node;
-  m_node.init({
+  auto m_node = manual_tuple_scan_iterator({
       row_tuple({{"name", "samer"}, {"age", "11.5"}}),
           row_tuple({{"name", "john"}, {"age", "30"}}),
           row_tuple({{"name", "john"}, {"age", "30"}}),
@@ -423,15 +460,17 @@ void test_distinct_iterator() {
           row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
     });
 
-  sort_iterator s_node;
-  s_node.init(&m_node, "");
+  auto s_node = sort_iterator(&m_node, "");
 
-  distinct_iterator d_node;
-  d_node.init(&s_node);
+  auto d_node = distinct_iterator(&s_node);
 
   print_data(&d_node);
 }
 
 int main() {
-  test_distinct_iterator();
+  // test_movies_csv();
+  // test_average_iterator();
+  // test_ratings_csv();
+  // test_sort_iterator();
+  // test_distinct_iterator();
 }
