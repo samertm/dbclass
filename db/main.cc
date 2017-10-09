@@ -211,23 +211,48 @@ class projection : public iterator {
   vector<string> cols_to_project;
 };
 
+class average : public iterator {
+ public:
+  void init(iterator *input, string col_to_average, string aggregated_col_name = "average") {
+    this->input = input;
+    this->col_to_average = col_to_average;
+    this->aggregated_col_name = aggregated_col_name;
+  }
+  row_tuple next() {
+    if (done) {
+      return EOF_tuple;
+    }
 
+    row_tuple t;
+    int count = 0;
+    double sum = 0;
+    while ( (t = this->input->next()) != EOF_tuple) {
+      count++;
+      double data_as_double = std::stod(t.row_data[this->col_to_average]);
+      sum += data_as_double; // TODO check for overflows
+    }
 
-int main() {
-  csv_scan s;
-  s.init("/home/samer/src/db/resources/movielens/movies.csv", {"movieid", "title"});
+    double avg = sum / static_cast<double>(count);
 
-  auto selection_node = selection();
-  selection_node.init(&s, [](row_tuple t) -> bool {
-      return t.row_data["movieid"] == "24";
-    });
+    unordered_map<string, string> row_tuple_data =
+        {{this->aggregated_col_name, std::to_string(avg)}};
 
-  auto projection_node = projection();
-  projection_node.init(&selection_node, {"title"});
+    done = true;
+    return row_tuple(row_tuple_data);
+  }
+  void close() {
+  }
+ private:
+  iterator *input;
+  string col_to_average;
+  bool done = false;
+  string aggregated_col_name;
+};
 
+void print_data(iterator *it) {
   row_tuple t;
 
-  while ( (t = projection_node.next()) != EOF_tuple ) {
+  while ( (t = it->next()) != EOF_tuple ) {
     bool first = true;
     for ( const auto& n : t.row_data ) {
       if (first) {
@@ -239,6 +264,56 @@ int main() {
     }
     cout << "\n";
   }
+}
 
-  return 0;
+void test_movies_csv() {
+  csv_scan s;
+  s.init("/home/samer/src/db/resources/movielens/movies.csv", {"movieid", "title"});
+
+  auto selection_node = selection();
+  selection_node.init(&s, [](row_tuple t) -> bool {
+      return t.row_data["movieid"] == "24";
+    });
+
+  auto projection_node = projection();
+  projection_node.init(&selection_node, {"title"});
+
+  print_data(&projection_node);
+}
+
+void test_average() {
+  manual_tuple_scan m_node;
+  m_node.init({
+      row_tuple({{"name", "samer"}, {"age", "11.5"}}),
+          row_tuple({{"name", "john"}, {"age", "30"}}),
+          row_tuple({{"name", "fred"}, {"age", "20"}}),
+          row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
+    });
+
+  average a_node;
+  a_node.init(&m_node, "age");
+
+  print_data(&a_node);
+}
+
+// WIP: This takes too long
+void test_ratings_csv() {
+  csv_scan cs_node;
+  cs_node.init("/home/samer/src/db/resources/movielens/ratings.csv", {"movieid", "rating"});
+
+  selection s_node;
+  s_node.init(&cs_node, [](row_tuple t) -> bool {
+      return t.row_data["movieid"] == "5000";
+    });
+
+  average a_node;
+  a_node.init(&s_node, "rating");
+
+  print_data(&a_node);
+}
+
+int main() {
+  //test_movies_csv();
+  test_average();
+  //test_ratings_csv();
 }
