@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <tuple>
@@ -249,6 +250,47 @@ class average_iterator : public iterator {
   string aggregated_col_name;
 };
 
+class sort_iterator : public iterator {
+ public:
+  void init(iterator *input, string col_to_sort) {
+    this->input = input;
+    this->col_to_sort = col_to_sort;
+  }
+  row_tuple next() {
+    if (this->sorted_rows == NULL) {
+      // Read all data into memory.
+      auto rows = new vector<row_tuple>();
+      row_tuple t;
+      while ( (t = this->input->next()) != EOF_tuple) {
+        rows->push_back(t);
+      }
+
+      auto col_to_sort = this->col_to_sort;
+
+      std::sort(rows->begin(), rows->end(), [&col_to_sort](row_tuple &a, row_tuple &b) {
+          // TODO: use const args
+          return a.row_data[col_to_sort] < b.row_data[col_to_sort];
+        });
+
+      this->sorted_rows = rows;
+    }
+
+    if (this->index >= this->sorted_rows->size()) {
+      return EOF_tuple;
+    }
+    row_tuple next_tuple = (*this->sorted_rows)[this->index];
+    this->index++;
+    return next_tuple;
+  }
+  void close() {
+  }
+ private:
+  iterator *input;
+  string col_to_sort;
+  vector<row_tuple> *sorted_rows = NULL;
+  size_t index = 0;
+};
+
 
 void print_data(iterator *it) {
   row_tuple t;
@@ -312,8 +354,24 @@ void test_ratings_csv() {
   print_data(&a_node);
 }
 
+void test_sort_iterator() {
+  manual_tuple_scan_iterator m_node;
+  m_node.init({
+      row_tuple({{"name", "samer"}, {"age", "11.5"}}),
+          row_tuple({{"name", "john"}, {"age", "30"}}),
+          row_tuple({{"name", "fred"}, {"age", "20"}}),
+          row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
+    });
+
+  sort_iterator s_node;
+  s_node.init(&m_node, "name");
+
+  print_data(&s_node);
+}
+
 int main() {
   //test_movies_csv();
   //test_average_iterator();
-  test_ratings_csv();
+  //test_ratings_csv();
+  test_sort_iterator();
 }
