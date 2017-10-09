@@ -252,6 +252,7 @@ class average_iterator : public iterator {
 
 class sort_iterator : public iterator {
  public:
+  // Pass `col_to_sort: ""` to sort on all rows.
   void init(iterator *input, string col_to_sort) {
     this->input = input;
     this->col_to_sort = col_to_sort;
@@ -269,7 +270,19 @@ class sort_iterator : public iterator {
 
       std::sort(rows->begin(), rows->end(), [&col_to_sort](row_tuple &a, row_tuple &b) {
           // TODO: use const args
-          return a.row_data[col_to_sort] < b.row_data[col_to_sort];
+          if (col_to_sort != "") {
+            return a.row_data[col_to_sort] < b.row_data[col_to_sort];
+          }
+          for ( const auto& n : a.row_data ) {
+            if (n.second < b.row_data[n.first]) {
+              return true;
+            } else if (n.second > b.row_data[n.first]) {
+              return false;
+            }
+            // if the values are equal, check the new col
+          }
+          // If the rows are equal, default to false
+          return false;
         });
 
       this->sorted_rows = rows;
@@ -289,6 +302,36 @@ class sort_iterator : public iterator {
   string col_to_sort;
   vector<row_tuple> *sorted_rows = NULL;
   size_t index = 0;
+};
+
+class distinct_iterator : public iterator {
+ public:
+  void init(iterator *input) {
+    this->input = input;
+  }
+  row_tuple next() {
+    if (this->done) {
+      return EOF_tuple;
+    }
+
+    row_tuple t;
+    while ( (t = this->input->next()) != EOF_tuple) {
+      if (first || (this->current_row != t)) {
+        this->current_row = t;
+        first = false;
+        return this->current_row;
+      }
+    }
+    this->done = true;
+    return EOF_tuple;
+  }
+  void close() {
+  }
+ private:
+  iterator *input;
+  row_tuple current_row;
+  bool first = true;
+  bool done = false;
 };
 
 
@@ -369,9 +412,26 @@ void test_sort_iterator() {
   print_data(&s_node);
 }
 
+void test_distinct_iterator() {
+  manual_tuple_scan_iterator m_node;
+  m_node.init({
+      row_tuple({{"name", "samer"}, {"age", "11.5"}}),
+          row_tuple({{"name", "john"}, {"age", "30"}}),
+          row_tuple({{"name", "john"}, {"age", "30"}}),
+          row_tuple({{"name", "john"}, {"age", "30"}}),
+          row_tuple({{"name", "fred"}, {"age", "20"}}),
+          row_tuple({{"name", "my grandmother"}, {"age", "110.1"}})
+    });
+
+  sort_iterator s_node;
+  s_node.init(&m_node, "");
+
+  distinct_iterator d_node;
+  d_node.init(&s_node);
+
+  print_data(&d_node);
+}
+
 int main() {
-  //test_movies_csv();
-  //test_average_iterator();
-  //test_ratings_csv();
-  test_sort_iterator();
+  test_distinct_iterator();
 }
