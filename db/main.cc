@@ -35,6 +35,18 @@ inline bool operator==(const row_tuple& lhs, const row_tuple& rhs){
 }
 inline bool operator!=(const row_tuple& lhs, const row_tuple& rhs){ return !(lhs == rhs); }
 
+row_tuple join_tuples(const row_tuple& t0, const row_tuple& t1) {
+  unordered_map<string, string> row_tuple_data;
+  for (const auto& p : t0.row_data) {
+    row_tuple_data[p.first] = p.second;
+  }
+  for (const auto& p: t1.row_data) {
+    // TODO: deal with col name collisions?
+    row_tuple_data[p.first] = p.second;
+  }
+  return row_tuple(row_tuple_data);
+}
+
 
 auto EOF_tuple = row_tuple();
 
@@ -379,6 +391,78 @@ class distinct_iterator : public iterator {
   bool done = false;
 };
 
+class nested_loop_join_iterator : public iterator {
+ public:
+  nested_loop_join_iterator (
+      iterator *input0,
+      iterator *input1,
+      vector<std::pair<string, string> > join_on_col0_to_col1
+                             ) :
+      input0(input0), input1(input1), join_on_col0_to_col1(join_on_col0_to_col1) {}
+
+  void init() {
+    this->input0->init();
+    this->input1->init();
+    this->r1 = this->input1->next();
+  }
+
+  row_tuple next() {
+    if (this->done) {
+      return EOF_tuple;
+    }
+    if (this->r1 == EOF_tuple) {
+      return EOF_tuple;
+    }
+
+    while (true) {
+      auto r0 = this->input0->next();
+      if (r0 == EOF_tuple) {
+        this->input0->close();
+
+        this->r1 = this->input1->next();
+        if (this->r1 == EOF_tuple) {
+          // Both inputs are exhausted, we're done.
+          this->done = true;
+          return EOF_tuple;
+        }
+        // Restart input0
+        this->input0->init();
+        r0 = this->input0->next();
+        if (r0 == EOF_tuple) {
+          // input0 is an empty table
+          this->done = true;
+          return EOF_tuple;
+        }
+      }
+
+      bool is_match = true;
+      for (const auto& p : this->join_on_col0_to_col1) {
+        if (r0.row_data[p.first] != r1.row_data[p.second]) {
+          is_match = false;
+          break;
+        }
+      }
+      if (is_match) {
+        return join_tuples(r0, r1);
+      }
+    }
+  }
+
+  void close() {
+    // input0 is already closed at this point.
+    this->input1->close();
+    this->r1 = row_tuple();
+    this->done = false;
+  }
+
+ private:
+  iterator *input0;
+  iterator *input1;
+  row_tuple r1;
+  vector<std::pair<string, string> > join_on_col0_to_col1;
+  int done = false;
+};
+
 
 void print_data(iterator *it) {
   it->init();
@@ -467,10 +551,35 @@ void test_distinct_iterator() {
   print_data(&d_node);
 }
 
+void test_nested_loop_join_iterator() {
+  auto m_node0 = manual_tuple_scan_iterator({
+      row_tuple({{"t0.name", "samer"}, {"t0.age", "11.5"}}),
+          row_tuple({{"t0.name", "john"}, {"t0.age", "30"}}),
+          row_tuple({{"t0.name", "fred"}, {"t0.age", "20"}}),
+          row_tuple({{"t0.name", "my grandmother"}, {"t0.age", "110.1"}}),
+          row_tuple({{"t0.name", "extra person"}, {"t0.age", "30"}}),
+          row_tuple({{"t0.name", "another extra person"}, {"t0.age", "30"}}),
+    });
+
+  auto m_node1 = manual_tuple_scan_iterator({
+      row_tuple({{"t1.name", "samer"}, {"t1.income", "400"}}),
+          row_tuple({{"t1.name", "john"}, {"t1.income", "300"}}),
+          row_tuple({{"t1.name", "fred"}, {"t1.income", "200"}}),
+          row_tuple({{"t1.name", "my grandmother"}, {"t1.income", "11000"}})
+    });
+
+  auto nlj_node = nested_loop_join_iterator(
+      &m_node0, &m_node1,
+      {{"t0.name", "t1.name"}});
+
+  print_data(&nlj_node);
+}
+
 int main() {
   // test_movies_csv();
   // test_average_iterator();
   // test_ratings_csv();
   // test_sort_iterator();
   // test_distinct_iterator();
+  test_nested_loop_join_iterator();
 }
